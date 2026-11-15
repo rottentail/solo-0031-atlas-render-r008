@@ -98,8 +98,79 @@ class Demo:
             time.sleep(.025)
         raise RuntimeError('render deadline exceeded')
 
-    def submit(self, snapshot, key='render-one', scale=1):
-        return self.call('POST', '/v1/jobs', {'snapshotId': snapshot['id'], 'scale': scale}, 202, {'Idempotency-Key': key})
+    def submit(self, snapshot, key='render-one', scale=1, depends_on=None):
+        body = {'snapshotId': snapshot['id'], 'scale': scale}
+        if depends_on is not None:
+            body['dependsOn'] = depends_on
+        return self.call('POST', '/v1/jobs', body, 202, {'Idempotency-Key': key})
+
+
+def heavy_scene():
+    doc = sample(); doc['width'] = 1500; doc['height'] = 1500
+    doc['layers'] = [dict(doc['layers'][0], id=f'sheet-{i}', width=1500, height=1500, transform={'scaleX': 1, 'scaleY': 1}) for i in range(16)]
+    return doc
+
+
+def succeeded_before(demo, first, second):
+    events = demo.call('GET', '/v1/events')
+    success = max(e['sequence'] for e in events if e['kind'] == 'job.succeeded' and e['subject'] == first)
+    started = min(e['sequence'] for e in events if e['kind'] == 'job.running' and e['subject'] == second)
+    return success < started
+
+
+def run_chain(demo, workflow, snapshot):
+    first = demo.submit(snapshot, 'chain-first')
+    second = demo.submit(snapshot, 'chain-second', depends_on=[first['id']])
+    assert second['state'] == 'waiting', second
+    assert second['dependsOn'] == [first['id']]
+    blocker, = second['waitingOn']
+    assert blocker['jobId'] == first['id'] and blocker['state'] in ('queued', 'running'), blocker
+    if workflow == 'dependent-render':
+        # The same key with the same dependency set replays the same job.
+        replay = demo.submit(snapshot, 'chain-second', depends_on=[first['id']])
+        assert replay['id'] == second['id'] and replay['state'] == 'waiting'
+        body = {'snapshotId': snapshot['id'], 'scale': 1}
+        # The same key with different semantics conflicts.
+        demo.call('POST', '/v1/jobs', body, 409, {'Idempotency-Key': 'chain-second'})
+        demo.call('POST', '/v1/jobs', dict(body, dependsOn=[first['id'], 'chain-00000000']), 409, {'Idempotency-Key': 'chain-second'})
+        # Dependency declarations are validated before anything is committed.
+        demo.call('POST', '/v1/jobs', dict(body, dependsOn=['job-00000999']), 404, {'Idempotency-Key': 'chain-unknown'})
+        demo.call('POST', '/v1/jobs', dict(body, dependsOn=[first['id'], first['id']]), 400, {'Idempotency-Key': 'chain-duplicate'})
+        demo.call('POST', '/v1/jobs', dict(body, dependsOn=[first['id']] * 9), 400, {'Idempotency-Key': 'chain-overflow'})
+        demo.call('POST', '/v1/jobs', dict(body, dependsOn=['not a job id']), 400, {'Idempotency-Key': 'chain-malformed'})
+        # A rejected submission does not burn its idempotency key.
+        assert demo.submit(snapshot, 'chain-unknown')['state'] in ('queued', 'running')
+        done_first = demo.wait(first['id'])
+        done_second = demo.wait(second['id'])
+        assert succeeded_before(demo, first['id'], second['id'])
+        return {'workflow': workflow, 'first': done_first['state'], 'second': done_second['state']}
+    # dependency-recovery: cancelling the predecessor does not cascade; the
+    # waiting reason stays visible and names the cancelled predecessor.
+    stopped = demo.call('POST', '/v1/jobs/' + first['id'] + '/cancel')
+    assert stopped['state'] == 'cancelled'
+    blocked = demo.call('GET', '/v1/jobs/' + second['id'])
+    blocker, = blocked['waitingOn']
+    assert blocked['state'] == 'waiting' and blocker['state'] == 'cancelled', blocked
+    # Cancelling and retrying the dependent re-enters waiting, not the queue.
+    demo.call('POST', '/v1/jobs/' + second['id'] + '/cancel')
+    again = demo.call('POST', '/v1/jobs/' + second['id'] + '/retry', status=202)
+    assert again['state'] == 'waiting' and again['attempt'] == 2, again
+    # Retry the predecessor, then kill the process in the middle of its render.
+    demo.call('POST', '/v1/jobs/' + first['id'] + '/retry', status=202)
+    demo.wait(first['id'], wanted=('running',))
+    demo.stop(abrupt=True)
+    demo.start()
+    # Recovery must not run the waiting dependent ahead of its predecessor.
+    assert demo.call('GET', '/v1/jobs/' + second['id'])['state'] == 'waiting'
+    done_first = demo.wait(first['id'])
+    done_second = demo.wait(second['id'])
+    assert done_first['attempt'] == 2 and done_second['attempt'] == 2
+    assert succeeded_before(demo, first['id'], second['id'])
+    # Purging the predecessor's bytes keeps its success fact and the chain.
+    demo.call('DELETE', '/v1/artifacts/' + done_first['artifactId'])
+    assert demo.call('GET', '/v1/jobs/' + first['id'])['state'] == 'succeeded'
+    assert demo.call('GET', '/v1/jobs/' + second['id'])['state'] == 'succeeded'
+    return {'workflow': workflow, 'first': done_first['state'], 'second': done_second['state'], 'attempts': [done_first['attempt'], done_second['attempt']]}
 
 
 def run(demo, workflow, out):
@@ -140,11 +211,11 @@ def run(demo, workflow, out):
         corrupt = json.loads(json.dumps(package)); corrupt['snapshot']['document']['width'] += 1
         demo.call('POST', '/v1/imports/corrupt', {'name': '损坏包', 'package': corrupt}, 400)
         demo.call('GET', '/v1/scenes/corrupt', status=404)
-    if workflow in ('cancel-render', 'retry-render', 'recover-render'):
-        heavy = sample(); heavy['width'] = 1500; heavy['height'] = 1500
-        heavy['layers'] = [dict(heavy['layers'][0], id=f'sheet-{i}', width=1500, height=1500, transform={'scaleX': 1, 'scaleY': 1}) for i in range(16)]
-        put(heavy, current['revision'])
+    if workflow in ('cancel-render', 'retry-render', 'recover-render', 'dependent-render', 'dependency-recovery'):
+        put(heavy_scene(), current['revision'])
         snapshot = demo.call('POST', '/v1/scenes/emblem/snapshots', {'expectedRevision': current['revision'] + 1}, 201)
+    if workflow in ('dependent-render', 'dependency-recovery'):
+        return run_chain(demo, workflow, snapshot)
     job = demo.submit(snapshot)
     if workflow == 'submit-render':
         assert demo.submit(snapshot)['id'] == job['id']

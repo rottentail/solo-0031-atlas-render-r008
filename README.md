@@ -21,6 +21,8 @@ python3 scripts/walkthrough.py --workflow retire-asset
 python3 scripts/walkthrough.py --workflow cancel-render
 python3 scripts/walkthrough.py --workflow retry-render
 python3 scripts/walkthrough.py --workflow recover-render
+python3 scripts/walkthrough.py --workflow dependent-render
+python3 scripts/walkthrough.py --workflow dependency-recovery
 python3 scripts/walkthrough.py --workflow import-package
 python3 scripts/walkthrough.py --workflow compare-renders
 ```
@@ -35,6 +37,8 @@ python3 scripts/walkthrough.py --workflow compare-renders
 4. `GET /v1/jobs/{id}` 等待 `succeeded`，再读取 `GET /v1/artifacts/{artifactId}`。
 
 同一幂等键和同一请求返回原任务；同键不同请求返回 409。快照包含引用素材的字节，后续场景编辑或素材退役不改变它。撤回快照会阻止新工作，已接受的任务仍使用固定输入。任务取消和结果提交竞争同一个持久状态；终态完成后不可取消。
+
+提交任务时可用 `dependsOn` 声明前序任务：前序全部成功前任务保持 `waiting`，响应中的 `waitingOn` 说明阻塞原因；前序成功后任务自动入队。前序失败或取消不会传染，重试前序至成功后链条继续推进；进程重启不会提前执行等待中的任务。
 
 ## 范围与限制
 

@@ -53,6 +53,14 @@
       "command": "python3 scripts/walkthrough.py --workflow recover-render"
     },
     {
+      "workflow_id": "dependent-render",
+      "command": "python3 scripts/walkthrough.py --workflow dependent-render"
+    },
+    {
+      "workflow_id": "dependency-recovery",
+      "command": "python3 scripts/walkthrough.py --workflow dependency-recovery"
+    },
+    {
       "workflow_id": "export-package",
       "command": "python3 scripts/walkthrough.py --workflow export-package"
     },

@@ -49,7 +49,7 @@ func Validate(s model.State) error {
 			return fmt.Errorf("orphan job %s", id)
 		}
 		switch j.State {
-		case "queued", "running", "failed", "cancelled":
+		case "waiting", "queued", "running", "failed", "cancelled":
 			if j.ArtifactID != "" {
 				return fmt.Errorf("unfinished job references artifact")
 			}
@@ -61,9 +61,15 @@ func Validate(s model.State) error {
 		default:
 			return fmt.Errorf("invalid job state")
 		}
+		if e := ValidateDependencies(s, j); e != nil {
+			return e
+		}
 		if e := ValidateSnapshot(j.Payload); e != nil {
 			return e
 		}
+	}
+	if e := ValidateAcyclic(s); e != nil {
+		return e
 	}
 	for id, a := range s.Artifacts {
 		j, ok := s.Jobs[a.JobID]
@@ -89,6 +95,73 @@ func Validate(s model.State) error {
 		}
 		if _, ok := s.Jobs[r.JobID]; !ok {
 			return fmt.Errorf("receipt result missing")
+		}
+	}
+	return nil
+}
+
+// ValidateDependencies checks one job's predecessor declarations against
+// the committed state: references must exist, be unique, and never target
+// the job itself. Executable jobs (queued or running) must already have
+// every predecessor succeeded — a state that would let a job run ahead of
+// its dependencies is rejected before it can be committed.
+func ValidateDependencies(s model.State, j model.Job) error {
+	if len(j.DependsOn) > model.MaxDependencies {
+		return fmt.Errorf("job %s exceeds dependency bound", j.ID)
+	}
+	seen := map[string]bool{}
+	for _, dep := range j.DependsOn {
+		if dep == j.ID {
+			return fmt.Errorf("job %s depends on itself", j.ID)
+		}
+		if seen[dep] {
+			return fmt.Errorf("job %s repeats dependency %s", j.ID, dep)
+		}
+		seen[dep] = true
+		if _, ok := s.Jobs[dep]; !ok {
+			return fmt.Errorf("job %s dependency %s missing", j.ID, dep)
+		}
+		if j.State == "queued" || j.State == "running" {
+			if s.Jobs[dep].State != "succeeded" {
+				return fmt.Errorf("executable job %s still waits on %s", j.ID, dep)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateAcyclic proves the dependency graph has no cycle, so no committed
+// state can contain jobs that mutually wait forever. Dependencies declared
+// at submission always reference older jobs, which already forbids cycles;
+// this check keeps that guarantee true for any persisted or imported state.
+func ValidateAcyclic(s model.State) error {
+	const (
+		white = iota // unvisited
+		gray         // on the current walk path
+		black        // fully explored
+	)
+	color := map[string]int{}
+	var visit func(id string) error
+	visit = func(id string) error {
+		color[id] = gray
+		for _, dep := range s.Jobs[id].DependsOn {
+			switch color[dep] {
+			case gray:
+				return fmt.Errorf("dependency cycle through job %s", dep)
+			case white:
+				if e := visit(dep); e != nil {
+					return e
+				}
+			}
+		}
+		color[id] = black
+		return nil
+	}
+	for id := range s.Jobs {
+		if color[id] == white {
+			if e := visit(id); e != nil {
+				return e
+			}
 		}
 	}
 	return nil

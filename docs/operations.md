@@ -4,7 +4,7 @@
 
 同一状态路径的第二个进程会因为独占文件锁拒绝启动。锁文件可长期存在，锁的有效性由操作系统进程锁决定。不要通过删除锁文件启动第二个写进程。
 
-SIGTERM或中断信号会停止领取任务，取消执行中的计算，等待HTTP请求和执行循环结束。执行中的任务保留running，下一次启动会重新入队。SIGKILL恢复用 `python3 scripts/walkthrough.py --workflow recover-render` 演练；只会结束该脚本自己启动的实例。
+SIGTERM或中断信号会停止领取任务，取消执行中的计算，等待HTTP请求和执行循环结束。执行中的任务保留running，下一次启动会重新入队。等待前序的waiting任务在重启后保持waiting：只有前序成功提交才会把它送入队列，恢复流程不会提前执行它。SIGKILL恢复用 `python3 scripts/walkthrough.py --workflow recover-render` 演练，依赖任务的中断恢复用 `--workflow dependency-recovery` 演练；只会结束该脚本自己启动的实例。
 
 备份时先正常停止实例，复制状态JSON；恢复时向空的独立状态路径复制，再启动。不要把运行中手工编辑过的JSON直接作为新事实。启动校验拒绝不支持版本、损坏摘要、孤立关联和非法文档。备份包含PNG字节与全部快照引用闭包，无需从外部素材服务恢复。
 

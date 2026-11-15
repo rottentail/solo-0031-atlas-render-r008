@@ -25,6 +25,10 @@ func New(st *persist.Store) *Worker {
 func (w *Worker) Recover() error {
 	return w.store.Update(func(s *model.State) error {
 		for id, j := range s.Jobs {
+			// Only interrupted executions are re-queued. Waiting jobs keep
+			// waiting: their predecessors have not all succeeded, and only
+			// a success commit may promote them, so a restart can never
+			// make a waiting job run ahead of its dependencies.
 			if j.State == "running" {
 				j.State = "queued"
 				j.UpdatedAt = time.Now().UTC()
@@ -143,6 +147,18 @@ func (w *Worker) step(parent context.Context) error {
 		v.ArtifactID = a.ID
 		s.Jobs[v.ID] = v
 		s.Emit("job.succeeded", v.ID)
+		// Promote waiting jobs whose predecessors have all succeeded. The
+		// promotion commits atomically with the predecessor's success, and
+		// success is irreversible, so a promoted job never has to wait
+		// again — including across process restarts.
+		for id, d := range s.Jobs {
+			if d.State == "waiting" && model.DepsSatisfied(*s, d) {
+				d.State = "queued"
+				d.UpdatedAt = v.UpdatedAt
+				s.Jobs[id] = d
+				s.Emit("job.queued", id)
+			}
+		}
 		return nil
 	})
 }

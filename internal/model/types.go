@@ -87,6 +87,7 @@ type Job struct {
 	Attempt    int       `json:"attempt"`
 	Error      string    `json:"error,omitempty"`
 	ArtifactID string    `json:"artifactId,omitempty"`
+	DependsOn  []string  `json:"dependsOn,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
 	Payload    Snapshot  `json:"payload"`
@@ -159,3 +160,39 @@ func (s *State) Emit(kind, id string) {
 	}
 }
 func ID(prefix string, seq int) string { return fmt.Sprintf("%s-%08d", prefix, seq) }
+
+// MaxDependencies bounds how many predecessor jobs one job may wait for.
+const MaxDependencies = 8
+
+// Blocker is one unsatisfied predecessor of a waiting job.
+type Blocker struct {
+	JobID string `json:"jobId"`
+	State string `json:"state"`
+}
+
+// DepsSatisfied reports whether every predecessor of j has succeeded.
+// Success is terminal and irreversible, so satisfaction is monotonic.
+func DepsSatisfied(st State, j Job) bool {
+	for _, dep := range j.DependsOn {
+		if st.Jobs[dep].State != "succeeded" {
+			return false
+		}
+	}
+	return true
+}
+
+// WaitingOn lists the predecessors still blocking a waiting job, in
+// declared dependency order. It is derived from committed state, never
+// persisted, so the reported reason always matches current facts.
+func WaitingOn(st State, j Job) []Blocker {
+	if j.State != "waiting" {
+		return nil
+	}
+	var out []Blocker
+	for _, dep := range j.DependsOn {
+		if d, ok := st.Jobs[dep]; ok && d.State != "succeeded" {
+			out = append(out, Blocker{JobID: dep, State: d.State})
+		}
+	}
+	return out
+}

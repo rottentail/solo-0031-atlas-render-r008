@@ -264,6 +264,44 @@
       "verification": "python3 scripts/walkthrough.py --workflow recover-render"
     },
     {
+      "id": "dependent-render",
+      "name": "提交有依赖的渲染任务",
+      "entry": "POST /v1/jobs (dependsOn)",
+      "success": "前序成功前任务保持waiting并报告阻塞原因，前序成功后自动入队完成",
+      "failure": "未知前序404、重复或超限前序400、同键不同依赖409",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "engine",
+        "persist",
+        "model"
+      ],
+      "steps": [
+        "经公开HTTP入口完成领域转换",
+        "通过存储或渲染结果观察已提交事实"
+      ],
+      "verification": "python3 scripts/walkthrough.py --workflow dependent-render"
+    },
+    {
+      "id": "dependency-recovery",
+      "name": "依赖链的取消重试与重启恢复",
+      "entry": "POST /v1/jobs/{id}/cancel|retry 与进程重启",
+      "success": "前序取消不传染、重试后链条继续，重启不提前执行等待任务，清理前序字节不影响成功事实",
+      "failure": "等待中的任务在前序成功前保持waiting",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "engine",
+        "persist",
+        "model"
+      ],
+      "steps": [
+        "经公开HTTP入口完成领域转换",
+        "通过存储或渲染结果观察已提交事实"
+      ],
+      "verification": "python3 scripts/walkthrough.py --workflow dependency-recovery"
+    },
+    {
       "id": "export-package",
       "name": "导出快照交换包",
       "entry": "GET /v1/snapshots/{id}/package",

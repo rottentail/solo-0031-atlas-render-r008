@@ -10,13 +10,16 @@
 
 场景 `active ↔ archived`，每次有效状态转换增加修订；归档后拒绝修订和冻结。素材 `available → retired`，相同 ID 不能替换为不同内容。冻结把场景修订与可用素材字节捕获成快照；快照 `active → revoked`，不可恢复。快照摘要覆盖文档和素材闭包，不覆盖可变撤回状态。
 
-任务 `queued → running → succeeded/failed/cancelled`，排队时也可取消。failed/cancelled 可显式重试，attempt 增加且沿用固定输入；succeeded 不能重试。启动恢复将 running 变回 queued，不增加 attempt。结果 `live → purged`，清理不会把成功任务改成失败。
+任务 `queued → running → succeeded/failed/cancelled`，排队时也可取消。声明前序的任务先处于 `waiting`，全部前序成功后才进入 `queued`；waiting 与 queued 同样可取消。failed/cancelled 可显式重试，attempt 增加且沿用固定输入；重试按当前前序满足情况回到 waiting 或 queued。succeeded 不能重试。启动恢复将 running 变回 queued，不增加 attempt；waiting 保持 waiting，恢复不会提前执行等待中的任务。结果 `live → purged`，清理不会把成功任务改成失败。
 
 ## 关键规则
 
 - 修订检查与状态写入在同一事务内完成；冲突不能覆盖已提交内容。
 - 快照冻结检查每个引用素材可用，捕获全部字节；冻结后的渲染不读取当前素材记录。
-- 幂等收据的请求语义为快照 ID 和输出倍数。相同收据可重放原任务，即使快照后来撤回。
+- 幂等收据的请求语义为快照 ID、输出倍数和依赖集合。相同收据可重放原任务，即使快照后来撤回。
+- 任务可在提交时声明前序任务（dependsOn，最多 8 个已存在任务，不可重复或自引用）。前序全部 succeeded 才允许执行；满足判定以成功事实为准，清理前序结果字节不影响推进。
+- 前序 failed/cancelled 不传染：后续任务保持 waiting 并在 waitingOn 中报告阻塞原因；前序重试成功后，等待任务在同一持久事务中入队。等待中的任务占用队列容量。
+- 依赖只指向已存在任务，图中不会出现环；持久校验拒绝自引用、重复、缺失引用、任何环，以及前序未全部成功的 queued/running 状态。
 - 接受任务前编译并核对工作预算；执行器领取按创建时间、ID 排序。当前只有一个执行器。
 - 取消在持久事务中提交；执行结束必须再次检查状态和尝试身份，避免过期结果覆盖。
 - 先写入临时文件并调用fsync，再原子替换目标，成功后才切换内存状态。写入失败时旧内存保持可读。
@@ -35,4 +38,4 @@
 
 ## 验证与暂缓边界
 
-构建 `go build ./...`，静态检查 `go vet ./...`。`scripts/walkthrough.py` 通过实际HTTP进程验证生产流，覆盖修订、输入拒绝、归档恢复、素材退役、冻结、撤回、幂等、取消、重试、进程恢复、交换包、像素比较、清理和事件。基线不提供自动化测试套件；完整测试策略、性能与兼容矩阵留待后续任务构建。运行声明使用 `testing: deferred`，省略 `test_command`。
+构建 `go build ./...`，静态检查 `go vet ./...`。`scripts/walkthrough.py` 通过实际HTTP进程验证生产流，覆盖修订、输入拒绝、归档恢复、素材退役、冻结、撤回、幂等、取消、重试、进程恢复、交换包、像素比较、清理、事件和依赖链。基线不提供自动化测试套件；完整测试策略、性能与兼容矩阵留待后续任务构建。运行声明使用 `testing: deferred`，省略 `test_command`。
